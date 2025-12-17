@@ -48,6 +48,21 @@ class TrackBattleWindow(arcade.Window):
         self.color1 = self._hex_to_rgb(color1_hex)
         self.color2 = self._hex_to_rgb(color2_hex)
 
+        # Get sector times
+        self.sector1_time1 = lap1['Sector1Time'].total_seconds(
+        ) if lap1['Sector1Time'] is not None else None
+        self.sector2_time1 = lap1['Sector2Time'].total_seconds(
+        ) if lap1['Sector2Time'] is not None else None
+        self.sector3_time1 = lap1['Sector3Time'].total_seconds(
+        ) if lap1['Sector3Time'] is not None else None
+
+        self.sector1_time2 = lap2['Sector1Time'].total_seconds(
+        ) if lap2['Sector1Time'] is not None else None
+        self.sector2_time2 = lap2['Sector2Time'].total_seconds(
+        ) if lap2['Sector2Time'] is not None else None
+        self.sector3_time2 = lap2['Sector3Time'].total_seconds(
+        ) if lap2['Sector3Time'] is not None else None
+
         # Interpolate telemetry to same number of points
         self.num_points = min(len(tel1), len(tel2))
 
@@ -59,6 +74,10 @@ class TrackBattleWindow(arcade.Window):
             (tel1['X'].iloc[i], tel1['Y'].iloc[i]) for i in idx1]
         self.positions2_world = [
             (tel2['X'].iloc[i], tel2['Y'].iloc[i]) for i in idx2]
+
+        # Store distance for sector markers
+        self.distances1 = [tel1['Distance'].iloc[i] for i in idx1]
+        self.distances2 = [tel2['Distance'].iloc[i] for i in idx2]
 
         # Time arrays
         self.time1 = np.linspace(
@@ -79,6 +98,9 @@ class TrackBattleWindow(arcade.Window):
          self.x_min, self.x_max,
          self.y_min, self.y_max) = build_track_from_example_lap(example_lap)
 
+        # Find sector marker positions from telemetry
+        self.sector_markers = self._find_sector_markers(tel1)
+
         # Interpolate track boundaries
         self.world_inner_points = self._interpolate_points(
             self.x_inner, self.y_inner)
@@ -90,6 +112,7 @@ class TrackBattleWindow(arcade.Window):
         self.screen_outer_points = []
         self.positions1_screen = []
         self.positions2_screen = []
+        self.sector_markers_screen = []
 
         # Scaling parameters
         self.world_scale = 1.0
@@ -116,6 +139,39 @@ class TrackBattleWindow(arcade.Window):
         xs_i = np.interp(t_new, t_old, xs)
         ys_i = np.interp(t_new, t_old, ys)
         return list(zip(xs_i, ys_i))
+
+    def _find_sector_markers(self, telemetry):
+        """Find the positions of sector boundaries on the track."""
+        markers = []
+
+        # Get distances where sectors change
+        # Sector 1 ends where Sector 2 starts
+        # Sector 2 ends where Sector 3 starts
+
+        # Find approximate sector boundaries (typically at 1/3 and 2/3 of track)
+        total_distance = telemetry['Distance'].max()
+
+        # Sector 1 -> 2 boundary (around 1/3 of track)
+        sector1_end_dist = total_distance / 3
+        idx1 = (telemetry['Distance'] - sector1_end_dist).abs().idxmin()
+        markers.append({
+            'sector': 1,
+            'x': telemetry.loc[idx1, 'X'],
+            'y': telemetry.loc[idx1, 'Y'],
+            'distance': telemetry.loc[idx1, 'Distance']
+        })
+
+        # Sector 2 -> 3 boundary (around 2/3 of track)
+        sector2_end_dist = 2 * total_distance / 3
+        idx2 = (telemetry['Distance'] - sector2_end_dist).abs().idxmin()
+        markers.append({
+            'sector': 2,
+            'x': telemetry.loc[idx2, 'X'],
+            'y': telemetry.loc[idx2, 'Y'],
+            'distance': telemetry.loc[idx2, 'Distance']
+        })
+
+        return markers
 
     def update_scaling(self, screen_w, screen_h):
         """Calculate scaling to fit track in window."""
@@ -150,6 +206,17 @@ class TrackBattleWindow(arcade.Window):
         self.positions2_screen = [self.world_to_screen(
             x, y) for x, y in self.positions2_world]
 
+        # Update sector marker screen positions
+        self.sector_markers_screen = []
+        for marker in self.sector_markers:
+            sx, sy = self.world_to_screen(marker['x'], marker['y'])
+            self.sector_markers_screen.append({
+                'sector': marker['sector'],
+                'x': sx,
+                'y': sy,
+                'distance': marker['distance']
+            })
+
     def on_resize(self, width, height):
         super().on_resize(width, height)
         self.update_scaling(width, height)
@@ -159,6 +226,18 @@ class TrackBattleWindow(arcade.Window):
         sy = self.world_scale * y + self.ty
         return sx, sy
 
+    def _get_current_sector(self, distance):
+        """Determine which sector the car is in based on distance."""
+        if len(self.sector_markers) < 2:
+            return 1
+
+        if distance < self.sector_markers[0]['distance']:
+            return 1
+        elif distance < self.sector_markers[1]['distance']:
+            return 2
+        else:
+            return 3
+
     def on_draw(self):
         self.clear()
 
@@ -167,6 +246,19 @@ class TrackBattleWindow(arcade.Window):
             arcade.draw_line_strip(self.screen_inner_points, (80, 80, 80), 3)
         if len(self.screen_outer_points) > 1:
             arcade.draw_line_strip(self.screen_outer_points, (80, 80, 80), 3)
+
+        # Draw sector markers
+        for marker in self.sector_markers_screen:
+            # Draw vertical line across track
+            arcade.draw_circle_filled(
+                marker['x'], marker['y'], 6, arcade.color.YELLOW)
+            arcade.draw_circle_outline(
+                marker['x'], marker['y'], 8, arcade.color.WHITE, 2)
+
+            # Draw sector label
+            label = f"S{marker['sector']}"
+            arcade.Text(label, marker['x'], marker['y'] + 15,
+                        arcade.color.YELLOW, 14, anchor_x="center", bold=True).draw()
 
         # Current frame
         frame = min(int(self.frame_index), self.num_points - 1)
@@ -207,26 +299,78 @@ class TrackBattleWindow(arcade.Window):
         arcade.Text(title, self.width / 2, self.height - 30,
                     arcade.color.WHITE, 28, anchor_x="center", bold=True).draw()
 
+        # Format lap times as MM:SS.mmm
+        def format_laptime(td):
+            total_seconds = td.total_seconds()
+            minutes = int(total_seconds // 60)
+            seconds = total_seconds % 60
+            return f"{minutes}:{seconds:06.3f}"
+
         # Driver 1 info (left side)
         y_offset = self.height - 80
         arcade.Text(f"{self.driver1} - {self.driver1_name}", 20, y_offset,
                     self.color1, 22, bold=True).draw()
-        arcade.Text(f"Lap Time: {self.lap1['LapTime']}", 20, y_offset - 35,
+        arcade.Text(f"Lap Time: {format_laptime(self.lap1['LapTime'])}", 20, y_offset - 35,
                     arcade.color.WHITE, 18).draw()
 
         if frame < self.num_points:
             arcade.Text(f"Current: {self.time1[frame]:.3f}s", 20, y_offset - 65,
                         (200, 200, 200), 16).draw()
 
+            # Current sector
+            current_sector1 = self._get_current_sector(self.distances1[frame])
+            arcade.Text(f"Sector {current_sector1}", 20, y_offset - 95,
+                        (150, 150, 150), 14).draw()
+
+        # Sector times for driver 1
+        sector_y = y_offset - 130
+        if self.sector1_time1 is not None:
+            color = arcade.color.GREEN if self.sector1_time1 < (
+                self.sector1_time2 or float('inf')) else arcade.color.WHITE
+            arcade.Text(f"S1: {self.sector1_time1:.3f}s", 20, sector_y,
+                        color, 16).draw()
+        if self.sector2_time1 is not None:
+            color = arcade.color.GREEN if self.sector2_time1 < (
+                self.sector2_time2 or float('inf')) else arcade.color.WHITE
+            arcade.Text(f"S2: {self.sector2_time1:.3f}s", 20, sector_y - 30,
+                        color, 16).draw()
+        if self.sector3_time1 is not None:
+            color = arcade.color.GREEN if self.sector3_time1 < (
+                self.sector3_time2 or float('inf')) else arcade.color.WHITE
+            arcade.Text(f"S3: {self.sector3_time1:.3f}s", 20, sector_y - 60,
+                        color, 16).draw()
+
         # Driver 2 info (right side)
         arcade.Text(f"{self.driver2} - {self.driver2_name}", self.width - 20, y_offset,
                     self.color2, 22, bold=True, anchor_x="right").draw()
-        arcade.Text(f"Lap Time: {self.lap2['LapTime']}", self.width - 20, y_offset - 35,
+        arcade.Text(f"Lap Time: {format_laptime(self.lap2['LapTime'])}", self.width - 20, y_offset - 35,
                     arcade.color.WHITE, 18, anchor_x="right").draw()
 
         if frame < self.num_points:
             arcade.Text(f"Current: {self.time2[frame]:.3f}s", self.width - 20, y_offset - 65,
                         (200, 200, 200), 16, anchor_x="right").draw()
+
+            # Current sector
+            current_sector2 = self._get_current_sector(self.distances2[frame])
+            arcade.Text(f"Sector {current_sector2}", self.width - 20, y_offset - 95,
+                        (150, 150, 150), 14, anchor_x="right").draw()
+
+        # Sector times for driver 2
+        if self.sector1_time2 is not None:
+            color = arcade.color.GREEN if self.sector1_time2 < (
+                self.sector1_time1 or float('inf')) else arcade.color.WHITE
+            arcade.Text(f"S1: {self.sector1_time2:.3f}s", self.width - 20, sector_y,
+                        color, 16, anchor_x="right").draw()
+        if self.sector2_time2 is not None:
+            color = arcade.color.GREEN if self.sector2_time2 < (
+                self.sector2_time1 or float('inf')) else arcade.color.WHITE
+            arcade.Text(f"S2: {self.sector2_time2:.3f}s", self.width - 20, sector_y - 30,
+                        color, 16, anchor_x="right").draw()
+        if self.sector3_time2 is not None:
+            color = arcade.color.GREEN if self.sector3_time2 < (
+                self.sector3_time1 or float('inf')) else arcade.color.WHITE
+            arcade.Text(f"S3: {self.sector3_time2:.3f}s", self.width - 20, sector_y - 60,
+                        color, 16, anchor_x="right").draw()
 
         # Time difference (center)
         diff_text = f"{self.faster_driver} faster by {self.time_diff:.3f}s"
